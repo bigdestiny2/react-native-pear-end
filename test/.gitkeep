@@ -1,0 +1,3 @@
+# Tests live here. Unit tests in test/unit/, integration tests in
+# test/integration/. Real test suites land alongside the implementation
+# work, after the reference handover.

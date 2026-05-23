@@ -1,0 +1,72 @@
+{
+  "name": "react-native-pear-end",
+  "version": "0.0.1-alpha.0",
+  "description": "Reusable Bare-on-React-Native integration — embed a Pear-style backend (corestore + hypercore + hyperswarm + hyperdht + autobase) inside a React Native app, with native UDP via UDX.",
+  "type": "module",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./worklet": {
+      "types": "./worklet/index.d.ts",
+      "default": "./worklet/index.mjs"
+    },
+    "./constants": {
+      "types": "./src/constants.d.ts",
+      "default": "./src/constants.js"
+    }
+  },
+  "bin": {
+    "pear-end-pack": "./bin/pear-end-pack.js"
+  },
+  "files": [
+    "src/",
+    "worklet/",
+    "android/",
+    "ios/",
+    "bin/",
+    "patches/",
+    "postinstall.js",
+    "README.md",
+    "ARCHITECTURE.md",
+    "TROUBLESHOOTING.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/unit/*.test.js",
+    "postinstall": "node postinstall.js"
+  },
+  "peerDependencies": {
+    "react-native": ">=0.72.0",
+    "react-native-bare-kit": "^0.13.0",
+    "bare-pack": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "patch-package": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bigdestiny2/react-native-pear-end"
+  },
+  "keywords": [
+    "react-native",
+    "bare",
+    "pear",
+    "hypercore",
+    "hyperswarm",
+    "hyperdht",
+    "p2p",
+    "mobile",
+    "android",
+    "ios"
+  ]
+}

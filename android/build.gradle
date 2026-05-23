@@ -1,0 +1,41 @@
+// react-native-pear-end Gradle plugin.
+//
+// STATUS: SKELETON. Real implementation lands when the reference
+// integration's pearpasteLinkBareAddons task source arrives via the
+// handover. The plugin contract here is the stable shape; the inner
+// logic will be filled in.
+//
+// Usage from a consumer's android/app/build.gradle:
+//
+//   plugins {
+//     id 'io.pearend.gradle' version '0.1.0'
+//   }
+//
+//   pearEnd {
+//     // Optional — defaults to auto-detected workspaces root, fallback
+//     // to RN host project. Set explicitly only if auto-detection picks
+//     // the wrong directory (rare).
+//     // root = file('../..')
+//
+//     // Optional — ABIs to stage addons for. Defaults to all four.
+//     // abis = ['armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64']
+//
+//     // Optional — path to the Bare worklet entrypoint. Required.
+//     workletEntry = 'backend/worklet.mjs'
+//   }
+
+apply plugin: 'groovy'
+
+dependencies {
+  implementation gradleApi()
+  implementation localGroovy()
+}
+
+gradlePlugin {
+  plugins {
+    pearEnd {
+      id = 'io.pearend.gradle'
+      implementationClass = 'io.pearend.gradle.PearEndPlugin'
+    }
+  }
+}
