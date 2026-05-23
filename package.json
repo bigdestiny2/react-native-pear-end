@@ -3,26 +3,26 @@
   "version": "0.0.1-alpha.0",
   "description": "Reusable Bare-on-React-Native integration — embed a Pear-style backend (corestore + hypercore + hyperswarm + hyperdht + autobase) inside a React Native app, with native UDP via UDX.",
   "type": "module",
-  "main": "src/index.js",
-  "types": "src/index.d.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.d.ts",
-      "default": "./src/index.js"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./worklet": {
-      "types": "./worklet/index.d.ts",
       "default": "./worklet/index.mjs"
     },
     "./constants": {
-      "types": "./src/constants.d.ts",
-      "default": "./src/constants.js"
+      "types": "./dist/constants.d.ts",
+      "default": "./dist/constants.js"
     }
   },
   "bin": {
     "pear-end-pack": "./bin/pear-end-pack.js"
   },
   "files": [
+    "dist/",
     "src/",
     "worklet/",
     "android/",
@@ -30,13 +30,18 @@
     "bin/",
     "patches/",
     "postinstall.js",
+    "tsconfig.json",
     "README.md",
     "ARCHITECTURE.md",
     "TROUBLESHOOTING.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/unit/*.test.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/unit/*.test.mjs",
+    "test:fast": "node --test test/unit/*.test.mjs",
+    "prepare": "npm run build",
     "postinstall": "node postinstall.js"
   },
   "peerDependencies": {

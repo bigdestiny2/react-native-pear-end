@@ -46,7 +46,7 @@ export class PearEnd {
    * The handle resolves when the worklet emits `'ready'`. If the worklet
    * crashes during boot, the returned Promise rejects with the error.
    */
-  static async start (opts: PearEndOptions): Promise<PearEndHandle> {
+  static async start (_opts: PearEndOptions): Promise<PearEndHandle> {
     // TODO(handover): implement against MobilePearEnd.js reference.
     //
     // Sketch:
