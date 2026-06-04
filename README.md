@@ -214,11 +214,9 @@ What the suite can **not** cover (needs a device — see [Status](#status)): rea
 
 ---
 
-## Ownership + donation intent
+## Ownership
 
-This SDK is maintained as a community Pear-mobile package. Almost everything it does is smoothing the developer experience of Holepunch's own stack, with no app-specific code.
-
-The intent is for `react-native-pear-end` to eventually live in or be endorsed by [`holepunchto`](https://github.com/holepunchto). If you're from Holepunch and want to coordinate, open an issue — we'd rather align than diverge, and we'll happily transfer the GitHub repo and npm name.
+Independent and community-maintained. It's unofficial — built on top of Holepunch's open-source packages, but not affiliated with or endorsed by them.
 
 ---
 
@@ -228,7 +226,6 @@ If you've shipped a Bare-on-mobile integration, your hard-won learnings are exac
 
 - **Hit a Bare-on-mobile gotcha not in [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)?** Open an issue.
 - **Solved one of the open ecosystem questions** (especially iOS xcframework staging)? Please tell us.
-- **From Holepunch?** Reach out.
 
 ---
 
@@ -242,4 +239,4 @@ The integration patterns here are extracted from two production Pear-on-React-Na
 
 [Apache-2.0](LICENSE) © 2026 `react-native-pear-end` contributors.
 
-The Pear and Holepunch trademarks are property of Holepunch; this package is not affiliated with Holepunch beyond depending on their open-source packages. If you're from Holepunch and want different framing/naming, open an issue.
+The Pear and Holepunch trademarks are property of Holepunch; this package is not affiliated with Holepunch beyond depending on their open-source packages.
