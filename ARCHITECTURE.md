@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes how `react-native-pear-end` sits between three existing things and what it does to glue them together. Read this if you're trying to understand what's happening under the hood or want to contribute.
+How `react-native-pear-end` sits between your app, `react-native-bare-kit`, and your Bare worklet — and what it actually does. This package is **pure JS/TS**: no native module, no Gradle plugin, no iOS Pod. Everything native is delegated to `react-native-bare-kit` (runtime) and `bare-pack` (bundler). It does additionally **vendor two `patch-package` patches** for Bare native-addon issues on Android (you apply them in your app — see [Vendored patches](#vendored-patches-patches)).
 
 ## Where this sits
 
@@ -8,18 +8,17 @@ This document describes how `react-native-pear-end` sits between three existing 
 ┌────────────────────────────────────────────────────────────┐
 │ Your React Native app                                      │
 │   - UI in TSX / React                                      │
-│   - Calls into: PearEnd.start() / pear.rpc.call(...)       │
+│   - Calls: PearEnd.start() / pear.rpc.call(...) / events() │
 └─────────────────┬──────────────────────────────────────────┘
-                  │  typed RPC
+                  │  typed RPC over BareKit.IPC
 ┌─────────────────▼──────────────────────────────────────────┐
-│ react-native-pear-end  (this package)                      │
-│   - Gradle plugin: runs bare-link at the right root        │
-│   - Pods config: stages iOS xcframeworks                   │
-│   - JS wrapper: lifecycle, IPC framing, gotchas            │
-│   - Patches: 32-bit ARM fixes via patch-package            │
-│   - CLI: pear-end-pack wrapping bare-pack                  │
+│ react-native-pear-end  (this package — JS/TS only)         │
+│   - RN wrapper:     PearEnd.start + sync RPC framing       │
+│   - Worklet helper: defineWorklet (boot/commands/events)   │
+│   - Bundle CLI:     pear-end-pack (wraps bare-pack)        │
+│   - Constants:      argon2 memlimits, RPC timeouts         │
 └─────────────────┬──────────────────────────────────────────┘
-                  │  consumes
+                  │  consumes (autolinked)
 ┌─────────────────▼──────────────────────────────────────────┐
 │ react-native-bare-kit  (Holepunch)                         │
 │   - V8 + libuv compiled for Android/iOS                    │
@@ -31,106 +30,83 @@ This document describes how `react-native-pear-end` sits between three existing 
 │   - corestore + hyperdrive + autobase + hyperbee           │
 │   - hyperswarm + hyperdht over UDX                         │
 │   - hypercore-crypto, sodium-native, rocksdb-native, etc.  │
-│   - Compiled into a bundle by `pear-end-pack`              │
+│   - Packed into a bundle by `pear-end-pack`                │
 └────────────────────────────────────────────────────────────┘
 ```
 
-The package doesn't reimplement Bare. It doesn't reimplement Pear primitives. It packages the integration glue so the next team doesn't pay the friction tax.
+It doesn't reimplement Bare or the Pear primitives. It packages the request/reply, events, lifecycle, and bundling glue.
 
-## Five layers
+## The four parts
 
-### 1. Build-system layer (Android Gradle plugin + iOS Pods)
-
-**Android:**
-- `android/build.gradle` registers a Gradle plugin
-- The plugin runs `bare-link` rooted at the **consumer's repo root** (not bare-kit's host project — the #1 trip-up). Auto-detects workspaces parents with a sensible fallback.
-- Stages native `.so` files into `react-native-bare-kit/android/src/main/addons/` for all 4 Android ABIs (`armeabi-v7a`, `arm64-v8a`, `x86`, `x86_64`).
-- Runs the worklet bundle generation via `pear-end-pack`.
-- Wires both as `preBuild` dependencies so the consumer's normal `./gradlew assemble` does the right thing.
-
-**iOS:**
-- `ios/PearEnd.podspec` declares the Pod.
-- A podspec hook stages xcframeworks into `ios/addons/` (mechanism TBD — see Open Questions below).
-- A Pod build phase runs `pear-end-pack` to generate the iOS worklet bundle.
-
-### 2. Bundle pipeline layer (CLI)
-
-`pear-end-pack`:
-- Wraps `bare-pack --linked` with sane defaults
-- Generates per-platform bundles (`worklet.android.bundle.js`, `worklet.ios.bundle.js`)
-- Generates Metro platform-shim files (`worklet-bundle.android.js`, `worklet-bundle.ios.js`) so the consumer can `import bundle from './worklet-bundle'` and get the right per-ABI bundle without thinking about it.
-- Validates the consumer's worklet entry exists.
-
-### 3. JS runtime wrapper layer (React Native side)
+### 1. RN runtime wrapper (`src/`)
 
 `src/PearEnd.ts`:
-- `PearEnd.start({ bundle, storage, ... })` — instantiates `new Worklet()` from `react-native-bare-kit`, encodes the bundle bytes (TextEncoder on Android, see TROUBLESHOOTING), calls `worklet.start(...)`, sets up IPC framing.
-- `pear.rpc.call(command, params)` — sync-style request/response over BareKit.IPC. Returns a typed Promise.
-- `pear.events(channel)` — AsyncIterable of streamed backend events.
-- `pear.suspend()` / `pear.teardown()` — lifecycle hooks tied to RN's AppState. Calls into the worklet's `Bare.on('suspend')` / `Bare.on('teardown')` handlers.
+- `PearEnd.start({ bundle, storage, ... })` loads `react-native-bare-kit` through the Metro `require` at call time (so the module imports cleanly under plain Node for tests, and only touches native code on device), instantiates `new Worklet()`, and starts it.
+- **Platform bundle handling:** the bundle is passed as **bytes on both platforms**. A string silently no-ops over Android's JNI, and the iOS string path empirically fails to run the worklet too (start() resolves but the worklet JS never executes); bytes are the only path proven to boot on both. `encodeBundle()` uses `TextEncoder` (fine off the hot IPC path).
+- Gates on the worklet's `ready` event (`readyTimeoutMs`, default 30s). A boot-error or timeout rejects `start()`.
+- Returns a `PearEndHandle`: `rpc.call(command, params)`, `events(channel)` (an `AsyncIterable`), `suspend()`, `teardown()`.
 
-`src/ipc.ts`:
-- Sync RPC over `BareKit.IPC`. Async handshake variants hang on RN in some configurations (see TROUBLESHOOTING) — we use synchronous channel construction.
-- Message envelope: `{ type: 'call'|'reply'|'error'|'event', id, command?, params?, data?, message?, code? }`
-- No cancellation primitive (caller-side timeouts terminate the waiting Promise, but the worklet keeps processing).
-- No backpressure (assumes JSON messages fit; revisit if you hit big-response problems).
+`src/ipc.ts` — the RN side of the RPC:
+- A small **synchronous** length-prefixed JSON protocol over `BareKit.IPC`. No async handshake (the `bare-rpc` async handshake can hang over the RN bridge — see TROUBLESHOOTING).
+- **Wire format:** `<8-char ASCII-hex length><JSON body>`, where the length counts UTF-16 code units and the body is UTF-8.
+  - request: `{ id, cmd, data }`
+  - reply: `{ id, result }` (success) or `{ id, error }` (failure; `error` is `{ message, code, name }`)
+  - event: `{ event, data }`
+- **Codec:** UTF-8 on both sides. The proven source apps use `b4a` (which is UTF-8) and it works fine on the bridge; this SDK hand-rolls the same UTF-8 encode/decode to stay dependency-free **and** to hold back an incomplete trailing multi-byte sequence between native reads (a single per-chunk decode can mis-handle a sequence split across reads). The bytes are identical to what the worklet side's `Buffer.from(...)` produces. The real bug this avoids was a *latin1* decode, not UTF-8.
+- Per-request caller-side timeouts (the waiting Promise rejects with `PearEndTimeoutError`; the worklet keeps processing — there is no cancellation primitive). Transient write failures retry with exponential backoff. Oversized/garbled buffers trigger a resync.
 
-`src/lifecycle.ts`:
-- Subscribes to RN's `AppState` and forwards transitions into the worklet.
-- Configurable `lockOnBackground` calls an RPC method on background.
-- Handles uncaught crash signals from the worklet (captures last `'boot'` stage so the error surface shows which subsystem was running).
+Lifecycle is part of the handle, not a separate module: `suspend()` optionally calls a `lock` RPC (when `lockOnBackground` is set) then `worklet.suspend()`; `teardown()` sends a graceful-shutdown RPC, then `worklet.terminate()`, then closes the IPC. You wire these to RN's `AppState`/unmount yourself.
 
-### 4. Worklet helper layer (Bare side)
+### 2. Worklet helper (`worklet/`)
 
-`worklet/index.mjs`:
-- `defineWorklet({ commands, events })` — declarative API for the consumer's worklet entrypoint.
-- Wires up the matching side of `worklet-rpc.mjs` automatically.
-- Exposes `Bare.on('suspend')` / `Bare.on('teardown')` hooks the consumer can register against.
+`worklet/index.mjs` — `defineWorklet({ boot, commands, events, suspend, resume, teardown })`:
+- Construct the worklet-side RPC from `BareKit.IPC`, register command handlers, and a built-in graceful-teardown command (`pear-end/teardown`).
+- Wire `Bare.on('suspend')` → `IPC.unref()` and `Bare.on('resume')` → `IPC.ref()` (plus your optional hooks), so a backgrounded app lets the process idle.
+- Run `boot(ctx)`: `ctx.progress(stage, message)` streams boot-stage events to the RN side (and records the last stage for crash diagnostics); the resolved value becomes the `ready` payload. If `boot()` throws, an error event carrying the last stage is emitted and the RN-side `start()` rejects.
+- `emit(channel, payload)` pushes an event to the RN side (also available on `ctx`).
 
-`worklet/worklet-rpc.mjs`:
-- The Bare-side mirror of `src/ipc.ts`.
-- Synchronous handshake construction (per the RN gotcha — see TROUBLESHOOTING).
-- Boot lifecycle: emits `'boot'` stage events during initialization, then `'ready'` when the worklet is operational.
+`worklet/worklet-rpc.mjs` — the Bare-side mirror of `src/ipc.ts`:
+- Same wire format. Encoding uses Bare's global `Buffer`; decoding uses `chunk.toString()`.
+- Retry/backoff on write failures, buffer-overflow recovery, and protocol-error resync — preserved from the production implementation this was ported from.
+- No `bare-events` dependency: a tiny built-in listener map keeps the bundled helper dependency-free.
 
-### 5. Patches + memory tuning layer
+Reserved channels (`pear-end/ready`, `pear-end/error`, `pear-end/boot`) and the `pear-end/teardown` command are shared constants between the two halves.
 
-`patches/`:
-- `fs-native-extensions+1.5.0.patch` — EINVAL from `flock` on 32-bit ARM kernels ≥5.10 with the compat layer (will be upstreamed)
-- `device-file+2.3.1.patch` — inode/mtime check fails on Android reinstall because the package manager bumps mtime via atomic rename (will be upstreamed)
+### 3. Bundle CLI (`bin/pear-end-pack.js`)
 
-`postinstall.js`:
-- Runs `patch-package` to apply the vendored patches on `npm install`
-- Verifies `react-native-bare-kit` version is compatible (warns on mismatch)
+- Wraps `bare-pack --linked --host <platform>-arm64 <entry> -o <out>` with sane defaults (`--out`, `--platforms`, `--host` override, `--no-shim`, `--verbose`).
+- Writes one bundle per platform (`worklet.android.bundle.mjs`, `worklet.ios.bundle.mjs`). `bare-pack` emits each as a self-contained ES module that `export default`s the bundle source string — so no Metro transformer is needed.
+- Generates the Metro platform shims (`worklet-bundle.js` + `worklet-bundle.android.js` / `worklet-bundle.ios.js`), each exporting `{ source, platform }`, so the consumer can `import bundle from './worklet-bundles/worklet-bundle'` and get the right one per OS.
+- Validates the worklet entrypoint exists up front and fails clearly if `bare-pack` isn't installed (or honors `PEAR_END_BARE_PACK`).
 
-`src/constants.ts`:
-- `ARGON2_MEMLIMIT_MOBILE = 64 * 1024 * 1024` — INTERACTIVE-level memlimit; required to avoid OOM on phones with <2 GB RAM
-- `ARGON2_MEMLIMIT_DESKTOP = 256 * 1024 * 1024` — exported for cross-device key derivation symmetry
-- See TROUBLESHOOTING for why these must match across desktop + mobile or vaults won't unlock cross-device
+### 4. Constants (`src/constants.ts`)
 
-## Open questions
+- `ARGON2_MEMLIMIT_MOBILE = 64 MB` — avoids OOM on phones with < 2 GB RAM.
+- `ARGON2_MEMLIMIT_DESKTOP = 256 MB` — exported so cross-device code can use one named value (Argon2id is deterministic: a passphrase derived with different memlimits yields different keys, so a vault encrypted on one device won't unlock on another — see TROUBLESHOOTING).
+- `DEFAULT_RPC_TIMEOUT_MS`, `LONG_RPC_TIMEOUT_MS`, `SYNC_READY_TIMEOUT_MS` — timeout defaults.
+
+## Vendored patches (`patches/`)
+
+Two `patch-package` patches for Bare native-addon issues that otherwise crash the worklet on Android, lifted verbatim from the production apps:
+
+- `device-file+2.3.1.patch` — stops the "Invalid device file, was modified" crash on Android reinstall (inode/mtime mismatch; the FDLock already guarantees single-process exclusivity).
+- `fs-native-extensions+1.5.0.patch` — treats `tryLock` `EINVAL` as "acquired" on 32-bit ARM (the advisory lock is redundant for a single-process app).
+
+These are **not** auto-applied — a library shouldn't mutate its consumer's `node_modules` on install. Copy them into your app's `patches/` and run `patch-package` (see TROUBLESHOOTING.md). They're pinned to the addon versions the apps shipped (`device-file@2.3.1`, `fs-native-extensions@1.5.0`); confirm yours match before applying.
+
+## Open questions (ecosystem-level; this SDK documents, does not solve)
 
 ### iOS xcframework staging
 
-`react-native-bare-kit` ships its own xcframework via the iOS Pod, but Bare native addons (`udx-native`, `sodium-native`, etc.) ship as separate xcframeworks that need to be staged into `ios/addons/`. Currently no documented mechanism exists for this in the RN context — `bare-android`/`bare-ios` examples show the pattern for native-only apps using `addons.yml + xcodegen`, but that doesn't map cleanly to RN's Pod-based build.
+`react-native-bare-kit` ships its own xcframework via its iOS Pod, but Bare native addons (`udx-native`, `sodium-native`, etc.) ship as separate xcframeworks. The `bare-android`/`bare-ios` examples stage these via `addons.yml + xcodegen` for native-only apps; that doesn't map cleanly onto RN's Pod-based build, and there's no canonical RN mechanism yet. If you've solved this, please open an issue.
 
-**Options under investigation:**
+### App Store JavaScriptCore policy
 
-1. Build a separate Pod that depends on the addon Pods, vendoring xcframeworks in `node_modules/<addon>/ios/<name>.xcframework`
-2. An iOS equivalent of `bare-link` that generates xcframeworks from prebuilds at install time
-3. A `postinstall` hook that downloads prebuilt xcframeworks from a GitHub Release URL
-4. CocoaPods native plugin that resolves `bare-addon`-style dependencies from npm
+Apple historically requires JavaScriptCore for embedded JS; Bare embeds V8 + libuv. Whether Apple accepts this in review is empirically unproven — no known Bare-embedding app has been through review. Budget for it.
 
-This is the largest open question. Tracking in [issue TBD]() until we have a concrete answer.
+### `bare-link` rooting in monorepos
 
-### App Store JavaScriptCore concern
-
-Apple historically requires apps to use JavaScriptCore for embedded JS. Bare embeds V8 + libuv via `libbare-kit.so` / `BareKit.xcframework`. Whether Apple accepts this in App Store review is empirically unproven — no known Bare-embedding app has been through review yet. Open question.
-
-## Versioning
-
-- This package's version tracks `react-native-bare-kit`'s major version compatibility
-- We pin upstream patches to specific dependency versions. When upstream releases a fix, we remove the patch and bump the peer-dep range.
-- Patches are temporary by design — goal is zero vendored patches within 6 months.
+`react-native-bare-kit`'s link step roots `bare-link` at the RN host project's `node_modules`, which can miss addons installed at a workspaces parent. The real fix is a `--root` flag upstream.
 
 ## File layout
 
@@ -142,23 +118,14 @@ react-native-pear-end/
 ├── CHANGELOG.md
 ├── LICENSE
 ├── package.json
-├── postinstall.js
-│
-├── android/
-│   ├── build.gradle
-│   └── src/main/{groovy,java}/io/pearend/gradle/PearEndPlugin.*
-│
-├── ios/
-│   ├── PearEnd.podspec
-│   └── PearEnd/PearEnd.swift
+├── tsconfig.json
 │
 ├── src/
 │   ├── index.ts            (public exports)
-│   ├── PearEnd.ts          (main class)
-│   ├── ipc.ts              (sync RPC)
-│   ├── lifecycle.ts        (AppState wiring)
-│   ├── constants.ts        (memory tuning, etc.)
-│   └── types.ts            (TypeScript types)
+│   ├── PearEnd.ts          (main class: Worklet + start + lifecycle handle)
+│   ├── ipc.ts              (RN-side sync RPC + UTF-8 codec)
+│   ├── constants.ts        (memory + timeout constants)
+│   └── types.ts            (TypeScript types + error classes)
 │
 ├── worklet/
 │   ├── index.mjs           (defineWorklet API)
@@ -167,10 +134,11 @@ react-native-pear-end/
 ├── bin/
 │   └── pear-end-pack.js    (bare-pack wrapper CLI)
 │
-├── patches/                (vendored upstream patches)
-│   ├── fs-native-extensions+1.5.0.patch  (TBD on arrival)
-│   └── device-file+2.3.1.patch           (TBD on arrival)
+├── patches/                (vendored patch-package patches; apply in your app)
+│   ├── device-file+2.3.1.patch
+│   └── fs-native-extensions+1.5.0.patch
 │
-├── examples/               (sample apps)
-└── test/                   (unit + integration tests)
+├── examples/
+└── test/
+    └── unit/               (node --test suite)
 ```

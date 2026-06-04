@@ -1,6 +1,6 @@
 {
   "name": "react-native-pear-end",
-  "version": "0.0.1-alpha.0",
+  "version": "0.1.0-beta.1",
   "description": "Reusable Bare-on-React-Native integration — embed a Pear-style backend (corestore + hypercore + hyperswarm + hyperdht + autobase) inside a React Native app, with native UDP via UDX.",
   "type": "module",
   "main": "dist/index.js",
@@ -25,11 +25,8 @@
     "dist/",
     "src/",
     "worklet/",
-    "android/",
-    "ios/",
     "bin/",
     "patches/",
-    "postinstall.js",
     "tsconfig.json",
     "README.md",
     "ARCHITECTURE.md",
@@ -41,17 +38,15 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test test/unit/*.test.mjs",
     "test:fast": "node --test test/unit/*.test.mjs",
-    "prepare": "npm run build",
-    "postinstall": "node postinstall.js"
+    "prepare": "npm run build"
   },
   "peerDependencies": {
     "react-native": ">=0.72.0",
-    "react-native-bare-kit": "^0.13.0",
-    "bare-pack": "^1.0.0"
+    "react-native-bare-kit": "^0.14.0",
+    "bare-pack": "^2.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "patch-package": "^8.0.0",
     "typescript": "^5.0.0"
   },
   "engines": {

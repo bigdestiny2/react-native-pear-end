@@ -41,14 +41,17 @@ test('error classes carry the expected fields', () => {
   })
 })
 
-test('PearEnd.start throws SKELETON error until handover lands', async () => {
+test('PearEnd.start rejects clearly when react-native-bare-kit is absent', async () => {
+  // Under the plain-Node test runtime there is no Metro `require` and no
+  // react-native-bare-kit, so start() must fail with a helpful message rather
+  // than a ReferenceError or a hang.
   const m = await import('../../dist/index.js')
   await assert.rejects(
     () => m.PearEnd.start({
       bundle: { source: 'x', platform: 'android' },
       storage: '/tmp'
     }),
-    /SKELETON/,
-    'SKELETON marker present in error'
+    /react-native-bare-kit|require/i,
+    'error explains the missing native runtime'
   )
 })

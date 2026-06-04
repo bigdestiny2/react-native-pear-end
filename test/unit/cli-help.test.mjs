@@ -25,10 +25,8 @@ test('pear-end-pack with no args shows help + exits non-zero', () => {
   assert.match(result.stdout, /Usage:/, 'still shows usage')
 })
 
-test('pear-end-pack with bogus entry surfaces skeleton error clearly', () => {
+test('pear-end-pack with a nonexistent entry fails clearly before invoking bare-pack', () => {
   const result = spawnSync('node', [CLI, 'nonexistent.mjs'], { encoding: 'utf8' })
   assert.notEqual(result.status, 0)
-  // Should hit the SKELETON guard, not crash with a missing-file error,
-  // because the CLI doesn't yet validate paths before reaching it.
-  assert.match(result.stderr, /SKELETON/, 'mentions SKELETON status')
+  assert.match(result.stderr, /entrypoint not found/i, 'validates the entrypoint path up front')
 })

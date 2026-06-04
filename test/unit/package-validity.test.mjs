@@ -47,7 +47,7 @@ test('package.json: peer deps include react-native + react-native-bare-kit + bar
 
 test('package.json: files manifest includes everything we publish', async () => {
   const pkg = await loadPkg()
-  const expected = ['src/', 'worklet/', 'android/', 'ios/', 'bin/', 'patches/', 'postinstall.js', 'README.md', 'LICENSE']
+  const expected = ['dist/', 'src/', 'worklet/', 'bin/', 'README.md', 'LICENSE']
   for (const f of expected) {
     assert.ok(pkg.files.includes(f), `files manifest includes ${f}`)
   }

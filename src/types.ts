@@ -47,6 +47,13 @@ export interface PearEndOptions {
   defaultTimeoutMs?: number
 
   /**
+   * How long `PearEnd.start()` waits for the worklet's `ready` signal before
+   * rejecting. The worklet's boot() (corestore open + swarm join + your setup)
+   * must complete within this window. Default: 30_000.
+   */
+  readyTimeoutMs?: number
+
+  /**
    * Optional crash handler. Fires when the worklet emits an unhandled
    * error or aborts. `lastBootStage` is the most recent `'boot'` stage
    * event the worklet emitted before crashing — useful for debugging
@@ -95,9 +102,10 @@ export interface PearEndHandle {
   suspend(): Promise<void>
 
   /**
-   * Tear down the worklet. After this resolves, the worklet has called
-   * its `Bare.on('teardown')` handler, closed all subsystems, and the
-   * process is exiting. The PearEndHandle becomes unusable.
+   * Tear down the worklet. Sends a graceful-shutdown RPC so the worklet can
+   * run its `defineWorklet({ teardown })` hook (close swarms, drain corestore,
+   * etc.), then terminates the worklet and closes the IPC. The PearEndHandle
+   * becomes unusable after this resolves.
    */
   teardown(): Promise<void>
 }

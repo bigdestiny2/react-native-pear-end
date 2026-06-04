@@ -2,285 +2,239 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
-[![Status](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#status)
-[![Tests](https://img.shields.io/badge/tests-26%2F26-brightgreen.svg)](#testing)
+[![Status](https://img.shields.io/badge/status-beta-yellow.svg)](#status)
+[![Tests](https://img.shields.io/badge/tests-33%2F33-brightgreen.svg)](#testing)
 
 > Run a real Pear backend (Hypercore + Hyperswarm + HyperDHT + Autobase) inside a React Native app. Native UDP via UDX. No WebView. No WSS bridge.
 
-A reusable packaging layer that wraps [Bare](https://github.com/holepunchto/bare) + [`react-native-bare-kit`](https://github.com/holepunchto/react-native-bare-kit) so the next Pear-mobile app doesn't have to spend six weeks rediscovering the same integration friction.
+A small, reusable integration layer on top of [Bare](https://github.com/holepunchto/bare) + [`react-native-bare-kit`](https://github.com/holepunchto/react-native-bare-kit). It gives you a typed `PearEnd.start()` on the React Native side, a `defineWorklet()` helper on the Bare side, and a `pear-end-pack` bundler — so the wiring between your app and a Bare worklet is a few lines instead of a multi-week integration.
 
-> ⚠️ **Pre-alpha — do not install yet.** The package skeleton, public API surface, and documented gotchas are stable. The implementation lands once a production integration's artifact bundle is incorporated. Star + watch if you want to know when the first beta ships.
-
----
-
-## Why this exists
-
-The runtime story already works. A production app team shipped a working Bare-on-mobile integration earlier this year — the same backend code that runs in their desktop Pear-Electron build now also runs natively inside a Bare worklet on iOS Simulator + ZTE armeabi-v7a Android, with real UDP through UDX. No WebView. No bridge.
-
-But getting there cost them a six-week friction tax:
-
-| What they hit | How long it cost | The SDK's fix |
-| --- | --- | --- |
-| Gradle `bare-link` rooted at the wrong directory (RN host project, not workspaces parent) | ~6 hours of silent runtime aborts | Auto-detect workspaces root in the Gradle plugin |
-| iOS xcframeworks vanishing on `npm install` | ~1 day of hand-copying from a different install path | Pod-based staging (mechanism TBD — see [open questions](#open-ecosystem-questions)) |
-| `Worklet.start(string)` silent no-op on Android | ~1 day of "splash hangs forever" debugging | `PearEnd.start()` does the `TextEncoder` encoding for you |
-| Bare's `import('./module.js')` rejection | ~half a day | Documented + worked around in the worklet helper |
-| `fs-native-extensions` EINVAL on 32-bit ARM kernel ≥5.10 | Repeated boot aborts on real devices | Vendored patch (will be upstreamed) |
-| `device-file` mtime check failing on every Android reinstall | "Works the first time, never after" | Vendored patch (will be upstreamed) |
-| `argon2id` OOM on phones with <2 GB RAM | OS-killed worklet during vault creation | Exported `ARGON2_MEMLIMIT_MOBILE = 64 MB` constant |
-| Cross-device vault keys not matching (different memlimits) | "Vault works on phone, not desktop" | Cross-device-determinism constraint documented loudly |
-| `bare-rpc` async handshake hangs on RN | "Worklet runs but `'ready'` never fires" | Custom sync RPC over BareKit.IPC |
-| Metro per-platform bundle resolution | Tedious-but-mechanical wiring | Auto-generated platform shim files |
-| `AppState` → `Bare.on('suspend')` wiring | Lifecycle bugs ("battery drain on background") | Configurable `lockOnBackground` option |
-
-This SDK packages all of that so the next team gets a one-line install instead of a six-week debugging marathon.
+> **Status: beta.** The integration code here is extracted from two production Pear-on-React-Native apps (PearBrowser + PearPaste) that run on iOS + Android. The extracted layers (RPC, worklet helper, bundle CLI, lifecycle wrapper) build clean and pass a unit suite that exercises the full wire protocol in Node (33/33). What's **not** yet re-verified in this repackaged form is an end-to-end on-device boot — see [Status](#status) for the exact line between what's tested and what isn't. Try it, file issues; don't bet a production ship on it without running the on-device check yourself.
 
 ---
 
-## What this looks like for a consumer
+## What it does
+
+The runtime story works: a Bare worklet can run the full Pear stack — corestore, hypercore, hyperswarm, hyperdht, autobase — natively inside a React Native app, with real UDP through UDX, no WebView and no websocket bridge. `react-native-bare-kit` makes that possible. The friction is in the glue around it.
+
+This package packages the glue that was figured out the hard way in shipping apps (PearBrowser + PearPaste):
+
+| Friction | What this SDK does about it |
+| --- | --- |
+| `Worklet.start(string)` silently no-ops — on Android (JNI string-size limit) **and** iOS (worklet never runs); only bytes boot reliably | `PearEnd.start()` passes the bundle as bytes on both platforms |
+| `bare-rpc`'s async handshake can hang over the RN BareKit.IPC bridge — worklet runs but `ready` never fires | Ships a small **synchronous** length-prefixed JSON RPC (`src/ipc.ts` ⇄ `worklet/worklet-rpc.mjs`) with no async handshake |
+| Getting the IPC byte framing right — a latin1 decode corrupts any non-ASCII payload (accents, CJK, emoji) | A dependency-free **UTF-8** codec is built in and unit-tested: non-ASCII/emoji round-trips, split-read buffering, frame resync |
+| Bare native addons crash the worklet on Android (`device-file` mtime on reinstall; `fs-native-extensions` EINVAL on 32-bit ARM) | Ships two vetted `patch-package` patches (`patches/`) you apply in your app |
+| `argon2id` OOM-killing the worklet on phones with < 2 GB RAM, and cross-device key mismatches from differing memlimits | Exports `ARGON2_MEMLIMIT_MOBILE`/`ARGON2_MEMLIMIT_DESKTOP` constants and documents the cross-device-determinism constraint |
+| Per-platform Metro bundle resolution is tedious-but-mechanical | `pear-end-pack` generates the per-platform bundles (incl. the iOS Simulator host) **and** the Metro shim so you `import bundle from './worklet-bundles/worklet-bundle'` |
+| Lifecycle wiring (`AppState` → suspend/resume, graceful teardown) | The handle exposes `suspend()`/`teardown()`; `lockOnBackground` calls a `lock` RPC on suspend; the worklet helper wires `Bare.on('suspend'|'resume')` to `IPC.unref()`/`IPC.ref()` |
+
+What it deliberately does **not** do: it does not ship a custom native module, a Gradle plugin, or an iOS Pod. Native linking is handled by `react-native-bare-kit`'s own autolinking — this package is pure JS/TS on top (plus the two vendored `patch-package` patches above, which you apply in your app). See [Status](#status) for the things that are genuinely still open (iOS xcframework staging, App Store review, monorepo `bare-link` rooting) — those are ecosystem-level and this SDK documents them rather than pretending to solve them.
+
+---
+
+## Install
 
 ```sh
-npm install react-native-pear-end
-cd ios && pod install
+npm install react-native-pear-end react-native-bare-kit bare-pack
 ```
 
-```kotlin
-// android/app/build.gradle
-plugins { id 'io.pearend.gradle' version '0.1.0' }
+`react-native-bare-kit` is the native runtime embedder and handles its own autolinking — rebuild your dev client / run a native build after installing it. `bare-pack` is the bundler `pear-end-pack` wraps. Both are peer dependencies.
 
-pearEnd {
-  workletEntry = 'backend/worklet.mjs'
-}
+> **Android native-addon patches.** If your worklet pulls in `device-file` / `fs-native-extensions` (most Pear stacks do, transitively), copy this package's `patches/*.patch` into your app's `patches/` and run `patch-package` (e.g. on `postinstall`). They prevent two Android-only worklet crashes — see [TROUBLESHOOTING](./TROUBLESHOOTING.md). They're pinned to `device-file@2.3.1` / `fs-native-extensions@1.5.0`; confirm your versions match.
+
+> No `pod install` step beyond what `react-native-bare-kit` itself requires, and no Gradle plugin to register. If a guide tells you to add `io.pearend.gradle` — that was an earlier, abandoned design; it does not exist.
+
+---
+
+## Usage
+
+### 1. Your Bare worklet
+
+```js
+// backend/worklet.mjs — compiled by pear-end-pack, runs inside Bare
+import { defineWorklet, emit } from 'react-native-pear-end/worklet'
+import Corestore from 'corestore'
+import Hyperswarm from 'hyperswarm'
+
+let store, swarm
+
+defineWorklet({
+  async boot ({ progress }) {
+    const storagePath = Bare.argv[0] || './storage'
+    progress('corestore', 'Opening storage…')
+    store = new Corestore(storagePath)
+    await store.ready()
+
+    progress('swarm', 'Joining the swarm…')
+    swarm = new Hyperswarm()
+    swarm.on('connection', (conn) => store.replicate(conn))
+
+    return { ok: true } // becomes the `ready` payload on the RN side
+  },
+  commands: {
+    'note:add': async ({ text }) => {
+      // ... append to a hypercore ...
+      emit('note-added', { text, at: Date.now() })
+      return { ok: true }
+    }
+  },
+  events: ['note-added'],
+  async teardown () {
+    if (swarm) await swarm.destroy()
+    if (store) await store.close()
+  }
+})
 ```
+
+### 2. Pack it
+
+```sh
+npx pear-end-pack backend/worklet.mjs --out app/worklet-bundles
+```
+
+This runs `bare-pack --linked` per platform and writes the bundles plus a Metro shim (`worklet-bundle.js` + `worklet-bundle.android.js` / `worklet-bundle.ios.js`).
+
+### 3. Start it from React Native
 
 ```ts
 // App.tsx
 import { PearEnd } from 'react-native-pear-end'
-import bundle from './worklet-bundle'  // generated by pear-end-pack
+import bundle from './worklet-bundles/worklet-bundle' // generated above
+import { Paths } from 'expo-file-system' // or RNFS, etc.
 
 const pear = await PearEnd.start({
   bundle,
-  storage: RNFS.DocumentDirectoryPath,
+  storage: Paths.document.uri.replace('file://', '') + '/myapp',
   lockOnBackground: true,
+  onCrash: ({ error, lastBootStage }) =>
+    console.error('worklet crashed at', lastBootStage, error)
 })
 
-const result = await pear.rpc.call('vault:unlock', { passphrase })
+const result = await pear.rpc.call('note:add', { text: 'hello' })
 
 for await (const ev of pear.events('note-added')) {
   updateUI(ev)
 }
+
+// later, on AppState → background / unmount:
+await pear.suspend()
+await pear.teardown()
 ```
 
-```js
-// backend/worklet.mjs (Bare-side, compiled by pear-end-pack)
-import { defineWorklet, emit } from 'react-native-pear-end/worklet'
-import Hypercore from 'hypercore'
-import Hyperswarm from 'hyperswarm'
-
-defineWorklet({
-  commands: {
-    'vault:unlock': async ({ passphrase }) => {
-      // full Pear stack runs here — same as desktop
-      const key = await argon2id(passphrase, salt, {
-        memlimit: 64 * 1024 * 1024,  // ARGON2_MEMLIMIT_MOBILE
-        opslimit: 3,
-      })
-      return { ok: true }
-    },
-  },
-  events: ['note-added'],
-})
-```
-
-What the consumer **doesn't** write: Gradle `bare-link` rooting, addon staging, xcframework copying, `Worklet.start` byte-encoding, dynamic-import workarounds, IPC framing, patch application, Metro platform shims, memory tuning constants. All handled.
+`PearEnd.start()` resolves once your worklet's `boot()` returns (gated by `readyTimeoutMs`, default 30s). Boot `progress(stage, message)` calls stream to the RN side so you can drive a splash; if `boot()` throws, `start()` rejects and `onCrash` fires with the last stage reached.
 
 ---
 
 ## How this compares to other things
 
-The Holepunch ecosystem has several packages adjacent to this. Important to be clear about what each does:
+The Holepunch ecosystem has several adjacent packages. What each one is:
 
-| Package | What it is | Targets RN? | Status |
-| --- | --- | --- | --- |
-| [`bare`](https://github.com/holepunchto/bare) | The JS runtime itself (V8 + libuv) | No (low-level) | Stable |
-| [`bare-kit`](https://github.com/holepunchto/bare-kit) | Native app integration for Bare | No (native/iOS/Android) | Active |
-| [`react-native-bare-kit`](https://github.com/holepunchto/react-native-bare-kit) | The RN runtime embedder. **Required dependency.** | Yes (runtime layer) | Active |
-| [`bare-expo`](https://github.com/holepunchto/bare-expo) | Example Expo app. ~30 lines of useful code. Inline source string, no real backend. | Yes (example only) | Reference |
-| [`bare-android`](https://github.com/holepunchto/bare-android) | Example native Kotlin app | No (native Android) | Reference |
-| [`bare-ios`](https://github.com/holepunchto/bare-ios) | Example native Swift app | No (native iOS) | Reference |
-| [`bare-native`](https://github.com/holepunchto/bare-native) | Framework for native-only apps (no RN) | No (different domain) | Active |
-| [`bare-pack`](https://github.com/holepunchto/bare-pack) | Bundle packer. **Required dependency.** | No (build tool) | Active |
-| [`bare-link`](https://github.com/holepunchto/bare-link) | Native addon linker. Used internally. | No (build tool) | Active |
-| **`react-native-pear-end`** (this) | **Packaged RN integration** — the layer between bare-kit + your worklet | **Yes** | Pre-alpha |
+| Package | What it is | Targets RN? |
+| --- | --- | --- |
+| [`bare`](https://github.com/holepunchto/bare) | The JS runtime itself (V8 + libuv) | No (low-level) |
+| [`react-native-bare-kit`](https://github.com/holepunchto/react-native-bare-kit) | The RN runtime embedder. **Required dependency.** | Yes (runtime) |
+| [`bare-pack`](https://github.com/holepunchto/bare-pack) | Bundle packer. **Required dependency.** | No (build tool) |
+| [`bare-expo`](https://github.com/holepunchto/bare-expo) | Example Expo app, inline source string, no real backend | Yes (example) |
+| [`bare-android`](https://github.com/holepunchto/bare-android) / [`bare-ios`](https://github.com/holepunchto/bare-ios) | Example native apps | No (native) |
+| **`react-native-pear-end`** (this) | Typed RN wrapper + worklet helper + bundle CLI on top of the above | **Yes** |
 
-If you're shipping an RN app with a Bare worklet, you need `react-native-bare-kit` and `bare-pack` regardless. This SDK is what sits on top to make them usable without paying the friction tax.
+If you're shipping an RN app with a Bare worklet you need `react-native-bare-kit` and `bare-pack` regardless. This sits on top to make the request/reply, events, lifecycle, and bundling ergonomic.
 
 ---
 
 ## Status
 
-**Pre-alpha. Do not install in a production app yet.**
+**Beta — extracted from a production app, unit-tested, not yet re-verified end-to-end on a device in this packaged form.**
 
-What's stable today:
-- Package layout
-- TypeScript public API surface (`PearEnd.start()`, `PearEndHandle`, `defineWorklet`, error classes)
-- Memory-tuning constants and their cross-device-determinism contract
-- The empirical learnings encoded in [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)
-- Build infrastructure (TypeScript compiles cleanly, 26/26 tests pass)
+Implemented and unit-tested in Node (no native build required):
 
-What lands with the first implementation drop (expected soon):
-- The Gradle plugin's `bare-link` rooting logic
-- The two vendored patches (`fs-native-extensions`, `device-file`)
-- The IPC framing implementation
-- Boot-stage event names + teardown order
-- The iOS xcframework staging mechanism
+- **The RPC wire protocol** — length-prefixed JSON over `BareKit.IPC`, byte-for-byte identical on both sides. Tests drive request/reply, worklet→RN events, error propagation with codes, per-request timeouts, concurrent-request id correlation, buffer-overflow/resync, and non-ASCII (accents, CJK, emoji) round-trips.
+- **`defineWorklet()` lifecycle** — `boot()` → `progress` stages → `ready`, command dispatch, event emit, `suspend`/`resume`/`teardown`, and the boot-failure → `onCrash` path. Tested against injected `BareKit`/`Bare` globals.
+- **Public API surface** — `PearEnd.start`, `PearEndHandle`, `PearEndRpcError`, `PearEndTimeoutError`, options, and the memory constants.
+- **`pear-end-pack` CLI** — argument parsing, entrypoint validation, help, and the `bare-pack` invocation shape.
+- **Build** — TypeScript compiles clean; **33/33** unit tests pass.
+
+Verified in the apps this was extracted from (PearBrowser + PearPaste — e.g. the worklet boots the full Pear-end on the iOS Simulator in ~240 ms via the bytes path), but **not yet re-verified in this repackaged form** (this is the on-device check the maintainer is running now):
+
+- A real worklet booting `corestore`/`hyperswarm`/`hyperdht` on a physical iOS + Android device.
+- The packed bundle → `import` → `Worklet.start()` round trip through Metro on each platform.
+- `suspend`/`resume`/`teardown` against the live Bare runtime.
+
+Genuinely open at the ecosystem level (this SDK documents, does not solve — see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md)):
+
+- **iOS xcframework staging** for Bare native addons in an RN/Pod build — no canonical mechanism yet.
+- **App Store review of a V8-embedding app** — empirically unproven; budget for it.
+- **`bare-link` rooting in monorepos/workspaces** — addons installed at a parent `node_modules` may not be staged; a `--root` flag upstream is the real fix.
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the running list.
 
 ---
 
-## Quickstart (when the SDK ships)
-
-```sh
-# 1. Install
-npm install react-native-pear-end
-cd ios && pod install
-
-# 2. Bundle your worklet
-npx pear-end-pack backend/worklet.mjs --out mobile/backend
-
-# 3. Use it (see usage above)
-```
-
-For now: clone, `npm install`, `npm test` to verify the skeleton builds clean. See [Testing](#testing) below.
-
----
-
 ## Architecture
 
-Five layers. Read [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full picture.
+This package is pure JS/TS. It has four parts and leans on `react-native-bare-kit` (native runtime) and `bare-pack` (bundler) for everything native. Read [`ARCHITECTURE.md`](./ARCHITECTURE.md) for detail.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ Your React Native app (TSX, normal RN UI)                   │
 └────────────────────────────┬────────────────────────────────┘
-                             │
                   PearEnd.start() / pear.rpc.call(...)
-                             │
 ┌────────────────────────────▼────────────────────────────────┐
-│ react-native-pear-end                                       │
-│   Layer 1: Gradle plugin (bare-link at right root)          │
-│   Layer 2: bare-pack CLI wrapper + Metro shims              │
-│   Layer 3: JS wrapper (lifecycle, IPC, TextEncoder, gotchas)│
-│   Layer 4: Worklet helper (defineWorklet API)               │
-│   Layer 5: Patches + memory tuning                          │
+│ react-native-pear-end  (this package — JS/TS only)          │
+│   • RN wrapper:  PearEnd.start + sync RPC over BareKit.IPC   │
+│   • Worklet helper:  defineWorklet (boot/commands/events)    │
+│   • Bundle CLI:  pear-end-pack (bare-pack + Metro shims)     │
+│   • Constants:  argon2 memlimits, RPC timeouts              │
 └────────────────────────────┬────────────────────────────────┘
-                             │
-                  Worklet.start(bytes) + BareKit.IPC
-                             │
+              Worklet.start(bytes|string) + BareKit.IPC
 ┌────────────────────────────▼────────────────────────────────┐
-│ react-native-bare-kit  (Holepunch — runtime)                │
-│   V8 + libuv compiled for Android/iOS                       │
+│ react-native-bare-kit  (Holepunch — native runtime)         │
+│   V8 + libuv compiled for Android/iOS, autolinked           │
 └────────────────────────────┬────────────────────────────────┘
-                             │
-                  loads your bundled worklet
-                             │
+                  loads your packed worklet bundle
 ┌────────────────────────────▼────────────────────────────────┐
-│ Your Bare worklet (in your repo, compiled by pear-end-pack) │
-│   corestore + hyperdrive + autobase + hyperbee              │
-│   hyperswarm + hyperdht over UDX                            │
-│   hypercore-crypto, sodium-native, rocksdb-native           │
+│ Your Bare worklet (your repo, packed by pear-end-pack)      │
+│   corestore + hyperswarm + hyperdht over UDX + autobase ... │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Ownership + donation intent
-
-This SDK is built by the [HiveRelay](https://github.com/bigdestiny2/p2p-hiverelay) team but explicitly framed as a community Pear-mobile package — not a HiveRelay product. 95% of what it does is smoothing the developer experience of Holepunch's own stack, with no HiveRelay-specific code.
-
-**We expect to propose donation to Holepunch** once the package has matured and has 2+ real-world adopters. Until then we maintain it under this org as a stopgap. The intent is for `react-native-pear-end` to eventually live in or be endorsed by [`holepunchto`](https://github.com/holepunchto). If you're from Holepunch and want to coordinate earlier, open an issue.
-
-If we donate, we'll transfer the GitHub repo and the npm name. No long-term lock-in by design.
-
----
-
 ## Testing
 
-The skeleton has 26 tests covering everything testable before the implementation lands:
-
 ```sh
-npm install
-npm test
+npm test          # builds (tsc) then runs the unit suite
+npm run test:fast # runs the suite against an existing dist/
 ```
 
-Tests verify:
+The suite (33 tests) wires the worklet-side RPC to the RN-side RPC across an in-memory byte bridge that mimics the native duplex, and asserts the exact bytes one side writes are the bytes the other parses. It covers request/reply, events, errors-with-codes, timeouts, concurrency, non-ASCII payloads, the full `defineWorklet` boot→ready→teardown flow, the public API surface, `package.json` validity, and that the CLI loads and validates its input.
 
-- **Public API surface** matches the documented contract (PearEnd class, error classes, constants)
-- **`encodeBundle()`** correctly handles both string and Uint8Array sources (the TextEncoder-on-Android fix)
-- **Empirical defaults** are exactly the documented byte values (`ARGON2_MEMLIMIT_MOBILE === 64 MB`, etc.) — these are the contract, they must not drift
-- **`package.json` validity** — exports point at compiled files, peer deps include `react-native-bare-kit` + `bare-pack`, `files` manifest includes everything we publish
-- **CLI loads cleanly** — `pear-end-pack --help` exits 0 with usage output
-- **Postinstall hook** never crashes the consumer's `npm install`, even when `react-native-bare-kit` isn't installed yet
-
-Result: **26/26 pass** in ~230ms.
-
-```
-# tests 26
-# pass 26
-# fail 0
-```
-
-What can't be tested yet (gated on the implementation landing):
-- Real Gradle plugin behavior against an actual RN project
-- iOS xcframework staging
-- End-to-end worklet boot + RPC round-trip
-- Patch application against actual `fs-native-extensions` / `device-file` installs
-
-When those land, we'll add corresponding integration tests.
+What the suite can **not** cover (needs a device — see [Status](#status)): real native boot, Metro bundle resolution, and lifecycle against the live Bare runtime.
 
 ---
 
-## Open ecosystem questions
+## Ownership + donation intent
 
-These shape the SDK but are bigger than us:
+This SDK is maintained as a community Pear-mobile package. Almost everything it does is smoothing the developer experience of Holepunch's own stack, with no app-specific code.
 
-### 1. iOS xcframework staging
-
-`react-native-bare-kit` ships its own xcframework. Bare native addons (`udx-native`, `sodium-native`, etc.) ship as separate xcframeworks that need to land in `ios/addons/`. No documented mechanism exists for this in the RN context — the [`bare-android`](https://github.com/holepunchto/bare-android) and [`bare-ios`](https://github.com/holepunchto/bare-ios) examples show the pattern via `addons.yml + xcodegen` for native-only apps, but it doesn't map cleanly to RN's Pod-based build.
-
-Coordinating with Holepunch on the canonical answer. See [ARCHITECTURE.md](./ARCHITECTURE.md#open-questions) for the options under investigation.
-
-### 2. Apple App Store JSC policy
-
-Apple historically requires JavaScriptCore for embedded JS. Bare embeds V8 + libuv via `libbare-kit.so` / `BareKit.xcframework`. No known Bare-embedding app has been through App Store review yet. **Status: empirically unproven.**
-
-If you ship to App Store: budget for the possibility of rejection on this ground and have a fallback plan. We'll document any approval/rejection signal we get.
-
-### 3. `link.mjs` rooting in `react-native-bare-kit`
-
-Currently `link.mjs` roots `bare-link` at the RN host project's `node_modules`, which misses addons in workspaces/monorepo layouts. Our Gradle plugin works around it; the real fix is a `--root` flag upstream. PR planned.
+The intent is for `react-native-pear-end` to eventually live in or be endorsed by [`holepunchto`](https://github.com/holepunchto). If you're from Holepunch and want to coordinate, open an issue — we'd rather align than diverge, and we'll happily transfer the GitHub repo and npm name.
 
 ---
 
 ## Contributing
 
-This project welcomes contributions. If you've shipped a Bare-on-mobile integration, we especially want to hear from you — the SDK is designed to encode your hard-won learnings so the next team doesn't pay the same friction tax.
+If you've shipped a Bare-on-mobile integration, your hard-won learnings are exactly what belongs here.
 
-- **Hit a Bare-on-mobile bug not in [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)?** Open an issue. The doc grows from real stories.
-- **Already built a workaround for one of the open questions?** Tell us. Especially the iOS xcframework one — we'd love to short-circuit our exploration.
-- **From Holepunch?** Reach out. We'd like to align rather than diverge.
-- **Want to be an early adopter?** Open an issue and we'll prioritize your migration once the SDK hits beta.
-
-For now we're not accepting PRs against the skeleton — there's no implementation to merge against. Once we have a v0.1.0 beta, that opens up.
+- **Hit a Bare-on-mobile gotcha not in [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)?** Open an issue.
+- **Solved one of the open ecosystem questions** (especially iOS xcframework staging)? Please tell us.
+- **From Holepunch?** Reach out.
 
 ---
 
 ## Acknowledgments
 
-This package extracts integration work originally done by a Pear-mobile app team. Full credit and linkage will land in the README when their materials are incorporated.
-
-Built on top of [Bare](https://github.com/holepunchto/bare), [`react-native-bare-kit`](https://github.com/holepunchto/react-native-bare-kit), [`bare-pack`](https://github.com/holepunchto/bare-pack), and [`bare-link`](https://github.com/holepunchto/bare-link) by [Holepunch](https://github.com/holepunchto). None of this exists without their runtime work.
+The integration patterns here are extracted from two production Pear-on-React-Native applications — **PearBrowser** (a P2P mobile browser) and **PearPaste** (encrypted note + clipboard sync) — that run the full stack on iOS + Android. Built entirely on top of [Bare](https://github.com/holepunchto/bare), [`react-native-bare-kit`](https://github.com/holepunchto/react-native-bare-kit), [`bare-pack`](https://github.com/holepunchto/bare-pack), and [`bare-link`](https://github.com/holepunchto/bare-link) by [Holepunch](https://github.com/holepunchto). None of this exists without their runtime work.
 
 ---
 
@@ -288,4 +242,4 @@ Built on top of [Bare](https://github.com/holepunchto/bare), [`react-native-bare
 
 [Apache-2.0](LICENSE) © 2026 `react-native-pear-end` contributors.
 
-The Pear and Holepunch trademarks are property of Holepunch; this package is not affiliated with Holepunch beyond depending on their open-source packages. If you're from Holepunch and want us to use different framing/naming, open an issue.
+The Pear and Holepunch trademarks are property of Holepunch; this package is not affiliated with Holepunch beyond depending on their open-source packages. If you're from Holepunch and want different framing/naming, open an issue.

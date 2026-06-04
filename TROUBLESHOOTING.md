@@ -1,54 +1,82 @@
 # Troubleshooting
 
-Known issues, gotchas, and empirical learnings encoded as defaults in the SDK so you don't lose a day rediscovering them.
+Known issues, gotchas, and empirical learnings from running a Bare worklet inside React Native. Each entry is tagged:
 
-If you hit a problem not covered here, open an issue. Each entry below was a real story before it became a default.
+- **SDK handles this** — `react-native-pear-end` does it for you.
+- **You handle this** — the SDK only documents it; the fix is on your side or upstream.
+
+If you hit something not covered here, open an issue.
 
 ## Build-time issues
 
-### "Cannot find addon '.' imported from 'udx-native/binding.js'"
+### "Cannot find addon '.' imported from 'udx-native/binding.js'"  — *You handle this*
 
-**Symptom:** Worklet aborts at boot. Stack ends in libc abort.
+**Symptom:** Worklet aborts at boot; stack ends in a libc abort.
 
-**Cause:** `react-native-bare-kit`'s stock `android/link.mjs` roots its `bare-link` invocation at the RN host project's `node_modules` (not the workspaces/monorepo parent). For any app whose Bare backend deps are installed at a parent `node_modules`, the addons aren't staged into bare-kit's `src/main/addons/` directory and the worklet can't resolve them at runtime.
+**Cause:** `react-native-bare-kit`'s link step roots its `bare-link` invocation at the RN host project's `node_modules`, not a workspaces/monorepo parent. If your Bare backend deps live at a parent `node_modules`, the native addons aren't staged into bare-kit's `src/main/addons/` and the worklet can't resolve them at runtime.
 
-**Fix:** This SDK's Gradle plugin (`io.pearend.gradle`) re-runs `bare-link` rooted at the consumer's actual repo root (with workspaces parent auto-detection). If you're not using our plugin, you'd need to add a custom `pearpasteLinkBareAddons`-style Gradle task that calls `bare-link` from the right directory.
+**Fix:** Install your worklet's native deps where bare-kit's linker looks, or add a build step that re-runs `bare-link` rooted at your actual repo root. This SDK does **not** ship a Gradle plugin to do this (an earlier design did; it was removed). The real fix is a `--root` flag in `react-native-bare-kit`'s link step — worth filing upstream.
 
-**Upstream:** We're proposing a `--root` flag for `link.mjs`. See [link to PR when filed].
+### "rsync: ... bare-abort.X.X.X.xcframework: No such file or directory" (iOS)  — *You handle this*
 
-### "rsync: ... bare-abort.X.X.X.xcframework: No such file or directory" (iOS)
+**Symptom:** iOS build fails during the Pod "Copy XCFrameworks" phase after a clean `npm install`.
 
-**Symptom:** iOS build fails during Pod "Copy XCFrameworks" phase after a clean `npm install`.
+**Cause:** Bare native-addon xcframeworks aren't installed deterministically by `npm install` — they're assumed to already exist under `node_modules/react-native-bare-kit/ios/addons/`. After a clean install they can be missing, with no install hook to regenerate them.
 
-**Cause:** Bare native addon xcframeworks aren't installed deterministically by `npm install` — they're assumed to already exist in `node_modules/react-native-bare-kit/ios/addons/`. After a clean install they're gone, and there's no install hook to regenerate them.
-
-**Fix:** SDK provides an `ios/addons/` staging mechanism via the Pod (mechanism still being finalized — see ARCHITECTURE Open Questions). Until then: keep a backup copy of the xcframeworks from a known-working install and rsync them back after `npm install`.
-
-**Upstream:** Coordinating with Holepunch on the canonical answer.
+**Fix:** There is no canonical RN mechanism for this yet (see ARCHITECTURE → Open questions). Practical stopgap: keep a copy of the xcframeworks from a known-good install and restore them after `npm install`. If you've built a clean solution, please open an issue.
 
 ## Runtime issues
 
-### "Worklet.start no-op silently on Android" — splash hangs forever
+### `Worklet.start(string)` silently no-ops — splash hangs forever  — *SDK handles this*
 
-**Symptom:** Android app shows splash indefinitely. iOS works fine.
+**Symptom:** The splash hangs indefinitely; `start()` resolves quickly but the worklet JS never runs. No error, no log.
 
-**Cause:** `Worklet.start(bundleString)` accepts a string on iOS but silently no-ops on Android — it requires bytes. No error, no log, just nothing happens.
+**Cause:** `Worklet.start()` routes a **string** through `startUTF8` and a **Uint8Array** through `startBytes`. The string path silently no-ops on Android (a JNI string-size limit on a multi-MB bundle) **and** empirically fails on iOS too (the worklet never executes). Only the bytes path is reliable on both. (Verified on the iOS Simulator: string → worklet never runs; bytes → full Pear-end boot in ~240 ms.)
 
-**Fix:** `PearEnd.start()` calls `new TextEncoder().encode(bundleString)` before passing to `Worklet.start()`. If you're not using `PearEnd.start()`, always pass bytes:
+**Fix:** `PearEnd.start()` passes the bundle as **bytes on both platforms**. If you call `Worklet.start()` yourself, always pass bytes:
 
 ```js
-worklet.start('/app.bundle', new TextEncoder().encode(bundleSource))
+worklet.start('/app.bundle', new TextEncoder().encode(bundleSource), [storage])
 ```
 
-**Upstream:** Filing as an issue against `react-native-bare-kit` — either fix the no-op or fail loudly with a clear error.
+### Infinite splash from a default import of `@dr.pogodin/react-native-fs`  — *You handle this*
 
-### "UNSUPPORTED_PROTOCOL" from `import('./module.js')`
+**Symptom:** The worklet never starts; the splash hangs forever — but there's no worklet error. The failure is on the RN side, before `Worklet.start()` is even called.
+
+**Cause:** `@dr.pogodin/react-native-fs` v2 has **no default export** — only named exports (`DocumentDirectoryPath`, `writeFile`, …). `import RNFS from '@dr.pogodin/react-native-fs'` yields `undefined`, so `RNFS.DocumentDirectoryPath` throws on the first line of your start path. If a `.catch(() => {})` around your boot promise swallows it, you get an infinite splash with no visible cause.
+
+**Fix:** Use a namespace import for the storage path you pass to `PearEnd.start({ storage })`:
+
+```js
+import * as RNFS from '@dr.pogodin/react-native-fs'
+const storage = RNFS.DocumentDirectoryPath + '/myapp'
+```
+
+An upstream packaging characteristic, not a bug in this SDK — but it cost a real day of "iOS + Android both hang," so it's documented here.
+
+### IPC messages corrupt on non-ASCII payloads  — *SDK handles this*
+
+**Symptom:** RPC works for plain-ASCII payloads but a message containing accents, CJK, an em dash, or an emoji is silently dropped or mis-parsed.
+
+**Cause:** The length-prefixed framing counts UTF-16 code units while the body crosses the bridge as UTF-8 bytes. A naive latin1 decode on the RN side (`String.fromCharCode` per byte) turns one multi-byte character into several, desyncing the frame so `JSON.parse` fails and the message is dropped.
+
+**Fix:** Decode the body as **UTF-8**, not latin1. The proven source apps do this with `b4a` (`b4a.from` / `b4a.toString`, which is UTF-8) and it works fine on the bridge. This SDK instead hand-rolls the same UTF-8 encode/decode for two reasons: zero runtime deps on the RN side, and the decoder holds back an incomplete trailing multi-byte sequence between native reads (a single per-chunk decode can mis-handle a sequence split across two reads). It produces the exact bytes the worklet side's `Buffer.from(...)` does; non-ASCII — accents, CJK, em dash, astral-plane emoji via surrogate pairs — round-trips losslessly. Covered by a unit test.
+
+### `bare-rpc` async handshake hangs on RN  — *SDK handles this*
+
+**Symptom:** The worklet starts but the RN side never gets a `ready` event. Splash forever.
+
+**Cause:** `bare-rpc`'s default async handshake may not complete over the RN `BareKit.IPC` bridge.
+
+**Fix:** This SDK uses a small **synchronous** length-prefixed JSON RPC (`src/ipc.ts` ⇄ `worklet/worklet-rpc.mjs`). Constructors return immediately; there's no async handshake to stall. `PearEnd.start()` instead gates on the worklet emitting `ready` from its `boot()`.
+
+### "UNSUPPORTED_PROTOCOL" from `import('./module.js')`  — *You handle this*
 
 **Symptom:** Worklet crashes at boot with `UNSUPPORTED_PROTOCOL`.
 
-**Cause:** Bare's `pear://` module loader rejects relative dynamic imports. Common Node pattern of `import('./subsystem.js')` for lazy-loading doesn't transfer.
+**Cause:** Bare's module loader rejects relative **dynamic** imports. The common Node pattern of `import('./subsystem.js')` for lazy-loading doesn't transfer.
 
-**Fix:** Convert dynamic imports to static. Each subsystem module is statically imported at the top of your worklet entrypoint; the array references the bindings, not the specifiers.
+**Fix:** Use static imports in your worklet entrypoint and reference the bindings, not specifier strings:
 
 ```js
 // Doesn't work in Bare:
@@ -61,154 +89,114 @@ import { sync } from './sync.js'
 const SUBSYSTEMS = [vault, sync]
 ```
 
-This is a Bare runtime limitation, not a bug. Documenting prominently.
+This is a Bare runtime characteristic, not a bug in this SDK.
 
-### argon2id OOM on phones with <2 GB RAM
+### argon2id OOM on phones with < 2 GB RAM  — *SDK handles this (constants) / You handle this (usage)*
 
-**Symptom:** Worklet killed by OS during `CREATE_VAULT` / `UNLOCK_VAULT` / any argon2id-using operation.
+**Symptom:** Worklet killed by the OS during any argon2id-using operation (vault create/unlock).
 
-**Cause:** Default sodium `MEMLIMIT_MODERATE` is 256 MB. On a phone with 1.9 GB total RAM, after Android services + the RN side + Bare's V8 heap, there's nowhere near 256 MB free. OS kills the process.
+**Cause:** Sodium's `MEMLIMIT_MODERATE` is 256 MB. On a ~1.9 GB-RAM phone, after Android services + the RN side + Bare's V8 heap, there isn't 256 MB free, so the OS kills the process.
 
-**Fix:** Use `MEMLIMIT_INTERACTIVE` (64 MB) on mobile. SDK exports `ARGON2_MEMLIMIT_MOBILE` constant. **Important cross-device-determinism constraint:** if your desktop build uses `MODERATE` and your mobile build uses `INTERACTIVE`, the same passphrase derives DIFFERENT keys on the two devices. Vault encrypted on desktop can't be unlocked on mobile (and vice versa).
-
-**Recommendation:** Use the same memlimit everywhere. SDK also exports `ARGON2_MEMLIMIT_DESKTOP` to help you adopt 64 MB on both, or upgrade your mobile floor to 128 MB if 64 MB has a perceptible UX cost.
+**Fix:** Use a 64 MB memlimit on mobile. The SDK exports the constant; you apply it in your worklet's crypto:
 
 ```ts
 import { ARGON2_MEMLIMIT_MOBILE } from 'react-native-pear-end/constants'
 
 const key = await argon2id(passphrase, salt, {
   memlimit: ARGON2_MEMLIMIT_MOBILE,
-  opslimit: 3,
-  // ... must match desktop
+  opslimit: 3
+  // ... must match every other device the same passphrase is used on
 })
 ```
 
-### "Invalid device file, was modified" on Android reinstall
+**Cross-device-determinism constraint:** Argon2id is deterministic. If desktop uses `MODERATE` and mobile uses 64 MB, the same passphrase derives **different** keys — a vault encrypted on one won't unlock on the other. Pick one memlimit and use it everywhere (`ARGON2_MEMLIMIT_DESKTOP` is exported to help you standardize).
 
-**Symptom:** Worklet crashes at boot with this error after any APK reinstall (without `pm clear` between installs).
+### "Invalid device file, was modified" on Android reinstall  — *SDK ships a patch*
 
-**Cause:** Android's package manager bumps file mtime via atomic rename on every reinstall, even when content is unchanged (new inode + new mtime). The `device-file` library stores the original inode + mtime in a sidecar and refuses to open if they don't match.
+**Symptom:** Worklet crashes at boot with this error after an APK reinstall (without `pm clear` between installs).
 
-**Fix:** SDK ships a vendored patch that no-ops the inode/mtime check. Cryptographic integrity guards downstream (encrypted vault + signed device records) are the real authority — the inode/mtime check was overzealous.
+**Cause:** Android's package manager bumps file mtime via atomic rename on reinstall (new inode + new mtime), and the `device-file` library refuses to open when its stored inode/mtime don't match.
 
-**Upstream:** We'll be filing a PR against `device-file` to either relax the check or make it opt-in. The patch is shipped as a stopgap.
+**Fix:** This SDK **ships a `patch-package` patch**: [`patches/device-file+2.3.1.patch`](./patches/device-file+2.3.1.patch). It treats the inode/mtime mismatch as a recoverable post-dirty-shutdown state — the FDLock above already guarantees single-process exclusivity, so there's no "another process modified this" race on mobile. Copy it into your app's `patches/` directory and run `patch-package` (most RN apps already run it on `postinstall`). For a quick dev loop without the patch, `adb shell pm clear <pkg>` between reinstalls also avoids it.
 
-### "tryLock returned EINVAL" on 32-bit ARM
+### "tryLock returned EINVAL" on 32-bit ARM  — *SDK ships a patch*
 
-**Symptom:** Worklet aborts on first boot on 32-bit ARM Android devices (`armeabi-v7a`).
+**Symptom:** Worklet aborts on first boot on 32-bit ARM Android (`armeabi-v7a`).
 
-**Cause:** `fs-native-extensions/binding.c` calls `flock()` with a standard struct. On 32-bit ARM running newer Android kernels (≥5.10), the syscall path goes through a 64-bit-compat ioctl layer that returns EINVAL even when the lock is acquired.
+**Cause:** `fs-native-extensions` calls `flock()` in a way that can return EINVAL through the 64-bit-compat layer on newer Android kernels (≥ 5.10), even when the lock is acquired.
 
-**Fix:** SDK ships a vendored patch that treats EINVAL as success. The downstream RocksDB has its own lockfile that's the real guard — `fs-native-extensions` is advisory.
+**Fix:** This SDK **ships a `patch-package` patch**: [`patches/fs-native-extensions+1.5.0.patch`](./patches/fs-native-extensions+1.5.0.patch). It treats `EINVAL` from `tryLock` as "lock acquired" on 32-bit Android — the advisory lock is redundant for a single-process app whose data lives in its private files dir, and the real guard is downstream. Copy it into your app's `patches/` and run `patch-package`. Alternatively, drop the `armeabi-v7a` ABI.
 
-**Upstream:** PR against `fs-native-extensions` planned. Patch is a stopgap.
+## Lifecycle
 
-### `bare-rpc` async handshake hangs on RN
+### Worklet keeps running when the app is backgrounded  — *SDK provides the hook; you wire it*
 
-**Symptom:** Worklet starts but the RN side never gets a `'ready'` event. App splash forever.
+**Symptom:** Battery drain in the background; you expected the swarm to quiet down.
 
-**Cause:** `bare-rpc`'s default async handshake never completes over the RN BareKit.IPC bridge. Reason unknown — actively investigating.
+**Cause:** `react-native-bare-kit` doesn't auto-suspend the Bare runtime when RN backgrounds.
 
-**Fix:** SDK uses a custom **synchronous** RPC implementation in `src/ipc.ts` + `worklet/worklet-rpc.mjs`. Constructor returns immediately, handlers gate on `bootErr`/`ready` state, no async handshake required.
-
-**Upstream:** Filing an issue against `bare-rpc` for the RN-specific hang.
-
-## Lifecycle issues
-
-### Worklet keeps running when app is backgrounded
-
-**Symptom:** Battery drain when app is in background; user expects swarm to disconnect.
-
-**Cause:** `react-native-bare-kit` doesn't auto-suspend the Bare runtime when the RN side backgrounds. The OS scheduling will eventually throttle it but it's not instant.
-
-**Fix:** SDK wires `AppState` transitions to the worklet's `Bare.on('suspend')` hook. By default this is a no-op so existing behavior is preserved. If your app should disconnect/clear-state on background, opt in:
+**Fix:** The handle exposes `suspend()` and `teardown()`. Wire them to RN's `AppState` yourself:
 
 ```ts
-const pear = await PearEnd.start({
-  bundle,
-  storage,
-  lockOnBackground: true,  // calls a 'lock' RPC method on AppState→background
+import { AppState } from 'react-native'
+
+const pear = await PearEnd.start({ bundle, storage, lockOnBackground: true })
+
+AppState.addEventListener('change', (s) => {
+  if (s === 'background') pear.suspend() // unrefs IPC; calls a `lock` RPC if lockOnBackground
 })
 ```
 
-For chat-like apps that want to stay online, leave it false and consider running a foreground service (Android) or background-mode entitlement (iOS).
+On the worklet side, `defineWorklet` already wires `Bare.on('suspend')` → `IPC.unref()` and `Bare.on('resume')` → `IPC.ref()`, plus your optional `suspend`/`resume` hooks. Leave `lockOnBackground` off for chat-like apps that should stay online.
 
-### Background restrictions throttle the swarm
+### Background restrictions throttle the swarm  — *You handle this*
 
-**Symptom:** Worklet runs but Hyperswarm peer discoveries stop happening when app backgrounds.
+**Symptom:** Hyperswarm peer discovery stops a few seconds after backgrounding.
 
-**Cause:** Android Doze mode + iOS background-app refresh limits. The OS will aggressively throttle UDP after a few seconds of background.
+**Cause:** Android Doze + iOS background-refresh limits aggressively throttle UDP.
 
-**Fix:** This is platform-level, not something the SDK can fix. Three patterns:
-
-1. **Notes-app pattern:** accept disconnection on background, reconnect on resume. ~5-10s warmup back to "swarm joined".
-2. **Foreground service (Android):** declare a foreground service so Android keeps the process alive. Costs a persistent notification + battery, but reliable.
-3. **Background-mode entitlement (iOS):** declare appropriate background modes in `Info.plist` (`audio`, `voip`, `fetch`). Apple may reject the app at review if the entitlement doesn't match the app's actual purpose.
-
-SDK doesn't pick for you; document your app's requirements and pick accordingly.
+**Fix:** Platform-level; the SDK can't change it. Pick a pattern: accept disconnection and reconnect on resume (~5–10s warmup); run an Android foreground service (persistent notification, reliable); or declare iOS background modes (Apple may reject if they don't match the app's purpose).
 
 ## Performance + sizing
 
-### APK size — ~50-200 MB depending on ABI splits
+### APK size — ~50–200 MB depending on ABI splits  — *You handle this*
 
-**Symptom:** Sticker shock at unsigned APK size.
+**Cause:** `libbare-kit.so` is ~50 MB per ABI (V8 + libuv); native addons add ~10 MB per ABI. A universal multi-ABI APK is large.
 
-**Cause:** `libbare-kit.so` is ~50 MB per ABI (V8 + libuv compiled in). Native Bare addons add ~10 MB per ABI. Multi-ABI universal APK = ~200 MB just for the Bare side.
-
-**Fix:** Enable Android ABI splits in your Gradle config:
+**Fix:** Enable ABI splits so each device downloads one ABI (~60–80 MB), or upload an Android App Bundle and let Play split it:
 
 ```groovy
-android {
-  splits {
-    abi {
-      enable true
-      reset()
-      include 'armeabi-v7a', 'arm64-v8a', 'x86_64'
-      universalApk false
-    }
-  }
-}
+android { splits { abi { enable true; reset(); include 'arm64-v8a', 'armeabi-v7a', 'x86_64'; universalApk false } } }
 ```
-
-User download per-device drops to ~60-80 MB. Play Store does this automatically for Bundle uploads.
 
 ### Startup time
 
-Expected cold-start on lower-end Android (1.9 GB RAM, armeabi-v7a):
-- Splash → worklet `'ready'`: ~5-8s
-- `'ready'` → first peer connected: ~5-8s
-- Total cold start to operational: ~12-20s
+Cold-start figures observed in the source application (lower-end Android, ~1.9 GB RAM, `armeabi-v7a`):
+- splash → worklet `ready`: ~5–8s
+- `ready` → first peer connected: ~5–8s
 
-iPhone simulator (arm64, ample resources): ~5-11s total.
-
-If you're seeing significantly worse, check: APK size + ABI splits, RocksDB cache size (RocksDB does an initial scan that's slower on big stores), argon2id memlimit (lower memlimit = faster start at cost of weaker key).
+iOS simulator (arm64, ample resources): noticeably faster. If you're much worse, check APK size/ABI splits, RocksDB store size (initial scan), and argon2id memlimit. Treat these as ballpark, not guarantees — measure on your own stack.
 
 ## Submission concerns
 
-### Apple App Store JavaScriptCore policy
+### Apple App Store JavaScriptCore policy  — *Unknown*
 
-**Status:** unknown.
-
-Apple historically requires apps that execute JavaScript to use JavaScriptCore. Bare embeds V8 + libuv via `libbare-kit.so` / `BareKit.xcframework`. We do not have empirical signal on whether Apple accepts this in review. No known Bare-embedding app has been through App Store review yet.
-
-If you're shipping to App Store: budget for the possibility of rejection on this ground and have a fallback plan. If your app is rejected and you find a workaround (entitlement, justification language, framework configuration), please file an issue here so we can document.
+Apple historically requires apps executing JS to use JavaScriptCore. Bare embeds V8 + libuv. There is no empirical signal yet on whether Apple accepts this in review — no known Bare-embedding app has shipped. Budget for the possibility of rejection and have a fallback. If you get a signal either way, please open an issue.
 
 ### Google Play Store
 
-Should be straightforward. Google doesn't have an equivalent JS-engine restriction. The main concern is the APK size (use Bundle + dynamic delivery for best UX).
+No equivalent JS-engine restriction. The main concern is size — prefer an App Bundle.
 
 ---
 
 ## Filing a bug
 
-When opening an issue, please include:
+Please include:
 
 1. Platform (Android/iOS) + OS version + device model
-2. Architecture (armeabi-v7a / arm64-v8a / iOS simulator / iOS device)
+2. Architecture (`armeabi-v7a` / `arm64-v8a` / iOS simulator / iOS device)
 3. `react-native-pear-end` version
 4. `react-native-bare-kit` version
-5. Worklet bundle size (from `pear-end-pack --verbose`)
+5. Worklet bundle size (`pear-end-pack --verbose`)
 6. The crash signature (stack trace, error code, last log line if no error)
-7. Whether the problem reproduces on a clean `npm install`
-
-The first six let us bisect quickly. The seventh distinguishes a real bug from an environmental glitch.
+7. Whether it reproduces on a clean `npm install`
