@@ -27,12 +27,12 @@ Dates in YYYY-MM-DD.
 - Gradle plugin skeleton (`io.pearend.gradle`) registering
   `pearEndLinkBareAddons` + `pearEndBundleWorklet`, wired to preBuild
 - iOS Podspec skeleton (xcframework staging mechanism TBD pending
-  reference handover)
+  pending finalization)
 - CLI skeleton: `pear-end-pack`
 - Postinstall hook skeleton: `patch-package` apply + bare-kit version
   verification
 
-### Awaiting reference integration handover
+### Planned
 
 - Actual Gradle task implementations (the bare-link rooting fix)
 - Vendored patches (`fs-native-extensions+1.5.0.patch`,

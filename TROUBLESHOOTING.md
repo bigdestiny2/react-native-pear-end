@@ -189,7 +189,7 @@ If you're seeing significantly worse, check: APK size + ABI splits, RocksDB cach
 
 **Status:** unknown.
 
-Apple historically requires apps that execute JavaScript to use JavaScriptCore. Bare embeds V8 + libuv via `libbare-kit.so` / `BareKit.xcframework`. We do not have empirical signal on whether Apple accepts this in review. The reference integration hasn't been through review yet.
+Apple historically requires apps that execute JavaScript to use JavaScriptCore. Bare embeds V8 + libuv via `libbare-kit.so` / `BareKit.xcframework`. We do not have empirical signal on whether Apple accepts this in review. No known Bare-embedding app has been through App Store review yet.
 
 If you're shipping to App Store: budget for the possibility of rejection on this ground and have a fallback plan. If your app is rejected and you find a workaround (entitlement, justification language, framework configuration), please file an issue here so we can document.
 

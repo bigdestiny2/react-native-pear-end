@@ -26,12 +26,12 @@ A second sample showing the pair-up flow between two devices:
 - Fall back to relay tunnel when direct fails (uses a HiveRelay node as
   the tunnel — but this is optional; the SDK itself is relay-agnostic)
 
-Will land after notes-demo proves out and we have a real reference user
-on `react-native-pear-end` beyond the original integration team.
+Will land after notes-demo proves out and we have a second real-world
+adopter on `react-native-pear-end`.
 
-## Why these examples don't exist yet
+## Coming soon
 
-The SDK skeleton is currently awaiting a handover bundle from the reference
-integration team. Once their materials arrive, the first sample app will be a
-forked + stripped version of theirs proving the SDK works end-to-end, then
-the demos above will be built from scratch as cleaner reference points.
+The SDK skeleton is currently awaiting a production integration's artifact
+bundle. Once those materials arrive, the first sample app will be a
+stripped-down version proving the SDK works end-to-end, then the demos
+above will be built from scratch as cleaner reference points.

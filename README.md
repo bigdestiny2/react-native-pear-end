@@ -9,7 +9,7 @@
 
 A reusable packaging layer that wraps [Bare](https://github.com/holepunchto/bare) + [`react-native-bare-kit`](https://github.com/holepunchto/react-native-bare-kit) so the next Pear-mobile app doesn't have to spend six weeks rediscovering the same integration friction.
 
-> ⚠️ **Pre-alpha — do not install yet.** The package skeleton, public API surface, and documented gotchas are stable. The implementation lands when the reference integration's artifact bundle arrives. Star + watch if you want to know when the first beta ships.
+> ⚠️ **Pre-alpha — do not install yet.** The package skeleton, public API surface, and documented gotchas are stable. The implementation lands once a production integration's artifact bundle is incorporated. Star + watch if you want to know when the first beta ships.
 
 ---
 
@@ -128,7 +128,7 @@ What's stable today:
 - The empirical learnings encoded in [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)
 - Build infrastructure (TypeScript compiles cleanly, 26/26 tests pass)
 
-What awaits the reference integration's handover bundle (expected within ~1 week):
+What lands with the first implementation drop (expected soon):
 - The Gradle plugin's `bare-link` rooting logic
 - The two vendored patches (`fs-native-extensions`, `device-file`)
 - The IPC framing implementation
@@ -231,7 +231,7 @@ Result: **26/26 pass** in ~230ms.
 # fail 0
 ```
 
-What can't be tested yet (gated on the handover bundle):
+What can't be tested yet (gated on the implementation landing):
 - Real Gradle plugin behavior against an actual RN project
 - iOS xcframework staging
 - End-to-end worklet boot + RPC round-trip
@@ -253,7 +253,7 @@ Coordinating with Holepunch on the canonical answer. See [ARCHITECTURE.md](./ARC
 
 ### 2. Apple App Store JSC policy
 
-Apple historically requires JavaScriptCore for embedded JS. Bare embeds V8 + libuv via `libbare-kit.so` / `BareKit.xcframework`. The reference integration hasn't been through review yet. **Status: empirically unproven.**
+Apple historically requires JavaScriptCore for embedded JS. Bare embeds V8 + libuv via `libbare-kit.so` / `BareKit.xcframework`. No known Bare-embedding app has been through App Store review yet. **Status: empirically unproven.**
 
 If you ship to App Store: budget for the possibility of rejection on this ground and have a fallback plan. We'll document any approval/rejection signal we get.
 
@@ -265,20 +265,20 @@ Currently `link.mjs` roots `bare-link` at the RN host project's `node_modules`, 
 
 ## Contributing
 
-This package exists because we wanted it to exist. If you do too:
+This project welcomes contributions. If you've shipped a Bare-on-mobile integration, we especially want to hear from you — the SDK is designed to encode your hard-won learnings so the next team doesn't pay the same friction tax.
 
 - **Hit a Bare-on-mobile bug not in [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)?** Open an issue. The doc grows from real stories.
 - **Already built a workaround for one of the open questions?** Tell us. Especially the iOS xcframework one — we'd love to short-circuit our exploration.
 - **From Holepunch?** Reach out. We'd like to align rather than diverge.
-- **Want to be the second real-world adopter?** Email + we'll prioritize your migration once the SDK hits beta.
+- **Want to be an early adopter?** Open an issue and we'll prioritize your migration once the SDK hits beta.
 
-For now we're not accepting PRs against the skeleton — there's no implementation to merge against. Once the handover bundle lands and we have a v0.1.0 beta, that opens up.
+For now we're not accepting PRs against the skeleton — there's no implementation to merge against. Once we have a v0.1.0 beta, that opens up.
 
 ---
 
 ## Acknowledgments
 
-This package extracts integration work originally done by a Pear-mobile app team. Full credit + linkage will land in the README when their handover materials arrive.
+This package extracts integration work originally done by a Pear-mobile app team. Full credit and linkage will land in the README when their materials are incorporated.
 
 Built on top of [Bare](https://github.com/holepunchto/bare), [`react-native-bare-kit`](https://github.com/holepunchto/react-native-bare-kit), [`bare-pack`](https://github.com/holepunchto/bare-pack), and [`bare-link`](https://github.com/holepunchto/bare-link) by [Holepunch](https://github.com/holepunchto). None of this exists without their runtime work.
 

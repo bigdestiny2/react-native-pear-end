@@ -124,7 +124,7 @@ This is the largest open question. Tracking in [issue TBD]() until we have a con
 
 ### App Store JavaScriptCore concern
 
-Apple historically requires apps to use JavaScriptCore for embedded JS. Bare embeds V8 + libuv via `libbare-kit.so` / `BareKit.xcframework`. Whether Apple accepts this in App Store review is empirically unproven by us — the reference integration hasn't been through review yet. Open question.
+Apple historically requires apps to use JavaScriptCore for embedded JS. Bare embeds V8 + libuv via `libbare-kit.so` / `BareKit.xcframework`. Whether Apple accepts this in App Store review is empirically unproven — no known Bare-embedding app has been through review yet. Open question.
 
 ## Versioning
 
